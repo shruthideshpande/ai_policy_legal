@@ -12,10 +12,9 @@ START_URL = "https://www.indiacode.nic.in/"
 # Set to True to only list PDF URLs without downloading them.
 # Set to False to actually download the files.
 DRY_RUN = True
-# TODO: Replace with your Google Cloud project ID
-PROJECT_ID = "your-gcp-project-id"
-# TODO: Replace with your GCS bucket name
-BUCKET_NAME = "your-gcs-bucket-for-pdfs"
+
+PROJECT_ID = "aipolicylegal"
+BUCKET_NAME = "indiacode-pdfs-v1"
 
 # Base URL needed to resolve relative links
 BASE_URL = "https://www.indiacode.nic.in/"
