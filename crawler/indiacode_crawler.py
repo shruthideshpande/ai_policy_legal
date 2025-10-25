@@ -4,13 +4,19 @@ import time
 import os
 from urllib.parse import urljoin, urlparse
 
+from google.cloud import storage
+from google.api_core import exceptions
+
 # --- Configuration ---
 START_URL = "https://www.indiacode.nic.in/"
 # Set to True to only list PDF URLs without downloading them.
 # Set to False to actually download the files.
 DRY_RUN = True
-# Directory to save downloaded PDF files
-DOWNLOAD_DIR = "downloaded_pdfs"
+# TODO: Replace with your Google Cloud project ID
+PROJECT_ID = "your-gcp-project-id"
+# TODO: Replace with your GCS bucket name
+BUCKET_NAME = "your-gcs-bucket-for-pdfs"
+
 # Base URL needed to resolve relative links
 BASE_URL = "https://www.indiacode.nic.in/"
 # Be polite: Delay between requests
@@ -47,44 +53,45 @@ def get_page_content(url):
         print(f"Error fetching {url}: {e}")
         return None
 
-def download_pdf(pdf_url):
-    """Downloads a PDF or, in dry run mode, just prints the URL."""
+def download_and_upload_pdf(pdf_url: str, bucket: storage.Bucket):
+    """Downloads a PDF from a URL and uploads it to a GCS bucket."""
     if DRY_RUN:
         print(f"  [Dry Run] Found PDF: {pdf_url}")
         return
 
-    # os.path.exists checks if a file or directory exists.
-    # os.makedirs creates a directory, including any necessary parent directories.
-    if not os.path.exists(DOWNLOAD_DIR):
-        os.makedirs(DOWNLOAD_DIR)
-
-    # Generate a filename from the URL, ensuring it's valid
-    file_name = pdf_url.split('/')[-1]
-    if not file_name.endswith('.pdf'):
-        file_name += ".pdf" # Ensure it has a .pdf extension
-    # os.path.join creates a valid file path for the current operating system.
-    file_path = os.path.join(DOWNLOAD_DIR, file_name)
-
-    if os.path.exists(file_path):
-        print(f"  [Skipping] Already downloaded: {file_name}")
-        return
-
-    print(f"  [Downloading] PDF from: {pdf_url}")
     try:
-        # Use stream=True to download the file in chunks, which is memory-efficient for large files.
-        response = requests.get(pdf_url, headers=HEADERS, timeout=60, stream=True)
+        # Extract filename from URL
+        parsed_url = urlparse(pdf_url)
+        file_name = os.path.basename(parsed_url.path)
+        if not file_name:
+            print(f"Could not determine filename for {pdf_url}. Skipping.")
+            return
+
+        blob = bucket.blob(file_name)
+
+        if blob.exists():
+            print(f"  [Skipping] Already exists in GCS: {file_name}")
+            return
+
         response.raise_for_status()
-        with open(file_path, 'wb') as f:
-            # response.iter_content() iterates over the response data in chunks.
-            # This avoids loading the entire file into memory at once.
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"  [Success] Saved to {file_path}")
+
+        print(f"  [Downloading] PDF from: {pdf_url}")
+        response = requests.get(pdf_url, headers=HEADERS, timeout=60)
+        response.raise_for_status() # Raise an exception for bad status codes
+
+        print(f"  [Uploading] '{file_name}' to GCS bucket '{bucket.name}'...")
+        blob.upload_from_string(
+            response.content, content_type="application/pdf"
+        )
+
+        print(f"  [Success] Uploaded '{file_name}'.")
         time.sleep(REQUEST_DELAY_SECONDS) # Be polite after a download
     except requests.exceptions.RequestException as e:
-        print(f"  [Error] Failed to download {pdf_url}: {e}")
+        print(f"  [Error] Failed to download or upload {pdf_url}: {e}")
+    except exceptions.GoogleAPICallError as e:
+        print(f"  [Error] Failed to upload to GCS: {e}")
 
-def crawl_page(url):
+def crawl_page(url: str, bucket: storage.Bucket):
     """
     Crawls a single page, finding new links to visit and PDF files to download.
     """
@@ -115,7 +122,7 @@ def crawl_page(url):
             continue
 
         if absolute_url.lower().endswith('.pdf'):
-            download_pdf(absolute_url)
+            download_and_upload_pdf(absolute_url, bucket)
         elif absolute_url not in visited_urls and absolute_url not in urls_to_visit:
             urls_to_visit.add(absolute_url)
             new_links_found += 1
@@ -125,17 +132,33 @@ def crawl_page(url):
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    if PROJECT_ID == "your-gcp-project-id" or BUCKET_NAME == "your-gcs-bucket-for-pdfs":
+        print("Please update PROJECT_ID and BUCKET_NAME in the script.")
+        exit()
+
     if DRY_RUN:
         print("--- Starting crawl in DRY RUN mode. PDFs will NOT be downloaded. ---")
     else:
         print("--- Starting crawl in DOWNLOAD mode. ---")
-    print(f"PDFs will be saved to the '{DOWNLOAD_DIR}' directory.")
-    
+        print(f"PDFs will be uploaded to the GCS bucket 'gs://{BUCKET_NAME}'.")
+
+    # Initialize the GCS client
+    storage_client = storage.Client(project=PROJECT_ID)
+
+    try:
+        # Get the bucket object
+        bucket = storage_client.get_bucket(BUCKET_NAME)
+    except exceptions.NotFound:
+        print(f"Error: Bucket '{BUCKET_NAME}' not found.")
+        print("Please create the GCS bucket before running the script.")
+        exit()
+
     while urls_to_visit:
         # .pop() gets an arbitrary element, which is fine for a set-based queue
         current_url = urls_to_visit.pop()
-        crawl_page(current_url)
+        crawl_page(current_url, bucket)
         print(f"Queue size: {len(urls_to_visit)} | Visited: {len(visited_urls)}")
     
     print("\n--- Crawl Finished ---")
     print(f"Visited a total of {len(visited_urls)} pages.")
+    print(f"You can now create a Vertex AI Search data store from the GCS bucket 'gs://{BUCKET_NAME}'.")
