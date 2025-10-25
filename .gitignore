@@ -1,0 +1,7 @@
+# Ignore everything in the repository
+*
+
+# But un-ignore the 'crawler' directory and everything inside it.
+# The trailing slash is important.
+!crawler/
+!.gitignore
