@@ -1,0 +1,7 @@
+.gcloudignore
+Dockerfile
+requirements.txt
+
+# Python virtual environment
+venv/
+__pycache__/
