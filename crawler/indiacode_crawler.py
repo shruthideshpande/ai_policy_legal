@@ -10,11 +10,13 @@ from google.api_core import exceptions
 # --- Configuration ---
 START_URL = "https://www.indiacode.nic.in/"
 # Set to True to only list PDF URLs without downloading them.
-# Set to False to actually download the files.
-DRY_RUN = True
+# Read from environment variables, with fallbacks for local execution.
+# In Cloud Run, we will set these variables.
+PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "aipolicylegal")
+BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "indiacode-pdfs-v1")
+# Set the DRY_RUN environment variable to "false" to download files.
+DRY_RUN = os.environ.get("DRY_RUN", "true").lower() != "false"
 
-PROJECT_ID = "aipolicylegal"
-BUCKET_NAME = "indiacode-pdfs-v1"
 # File in GCS to store the set of visited URLs to allow for resuming.
 VISITED_URLS_BLOB_NAME = "crawler_state/visited_urls.txt"
 # Local file to buffer newly visited URLs before uploading.
@@ -76,8 +78,6 @@ def download_and_upload_pdf(pdf_url: str, bucket: storage.Bucket):
         if blob.exists():
             print(f"  [Skipping] Already exists in GCS: {file_name}")
             return
-
-        response.raise_for_status()
 
         print(f"  [Downloading] PDF from: {pdf_url}")
         response = requests.get(pdf_url, headers=HEADERS, timeout=60)
