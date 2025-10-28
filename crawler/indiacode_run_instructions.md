@@ -56,6 +56,9 @@ This command creates the job definition in Cloud Run. It doesn't run it yet.
 *   `--task-timeout`: Sets the maximum run time. The default is 10 minutes. We'll set it to 10 hours (`36000s`). The maximum is 24 hours.
 *   `--service-account`: It's a best practice to specify the service account. The default compute service account works fine if it has "Storage Admin" permissions.
 
+To create a job for the first time, run the command below.  Use "update" instead of 
+"create" to update an existing job.
+
 ```bash
 gcloud beta run jobs create $JOB_NAME \
   --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${JOB_NAME}" \
