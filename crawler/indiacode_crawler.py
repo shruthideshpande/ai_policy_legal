@@ -162,10 +162,6 @@ def upload_visited_urls(bucket: storage.Bucket):
         print(f"  [Error] Failed to sync visited URLs to GCS: {e}")
 # --- Main Execution ---
 if __name__ == "__main__":
-    if PROJECT_ID == "your-gcp-project-id" or BUCKET_NAME == "your-gcs-bucket-for-pdfs":
-        print("Please update PROJECT_ID and BUCKET_NAME in the script.")
-        exit()
-
     if DRY_RUN:
         print("--- Starting crawl in DRY RUN mode. PDFs will NOT be downloaded. ---")
     else:
