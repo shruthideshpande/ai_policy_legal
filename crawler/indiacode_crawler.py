@@ -15,6 +15,10 @@ DRY_RUN = True
 
 PROJECT_ID = "aipolicylegal"
 BUCKET_NAME = "indiacode-pdfs-v1"
+# File in GCS to store the set of visited URLs to allow for resuming.
+VISITED_URLS_BLOB_NAME = "crawler_state/visited_urls.txt"
+# Local file to buffer newly visited URLs before uploading.
+NEWLY_VISITED_URLS_FILE = "newly_visited_urls.txt"
 
 # Base URL needed to resolve relative links
 BASE_URL = "https://www.indiacode.nic.in/"
@@ -29,6 +33,7 @@ HEADERS = {
 
 # --- Global State (to avoid re-processing) ---
 urls_to_visit = {START_URL}
+# This set will be populated from GCS at the start of the script.
 visited_urls = set()
 
 def is_valid_url(url):
@@ -96,12 +101,17 @@ def crawl_page(url: str, bucket: storage.Bucket):
     """
     global urls_to_visit, visited_urls
 
-    if url in visited_urls:
+    if url in visited_urls or url in urls_to_visit:
         return
 
     visited_urls.add(url)
+    # Write newly visited URL to a local file to be uploaded in batches.
+    with open(NEWLY_VISITED_URLS_FILE, "a") as f:
+        f.write(url + "\n")
+
     html_content = get_page_content(url)
 
+    # The URL has been processed, remove it from the to-do list.
     if not html_content:
         return
 
@@ -129,6 +139,27 @@ def crawl_page(url: str, bucket: storage.Bucket):
     if new_links_found > 0:
         print(f"  Found {new_links_found} new links to crawl.")
 
+def upload_visited_urls(bucket: storage.Bucket):
+    """Appends newly visited URLs to the master list in GCS."""
+    if not os.path.exists(NEWLY_VISITED_URLS_FILE):
+        return
+
+    print("\n--- Syncing visited URLs to GCS ---")
+    blob = bucket.blob(VISITED_URLS_BLOB_NAME)
+
+    try:
+        # GCS doesn't have a native append. We simulate it by downloading the
+        # existing file, appending new URLs, and re-uploading.
+        existing_urls = blob.download_as_text() if blob.exists() else ""
+        with open(NEWLY_VISITED_URLS_FILE, "r") as f:
+            new_urls = f.read()
+
+        combined_urls = existing_urls + new_urls
+        blob.upload_from_string(combined_urls, content_type="text/plain")
+        os.remove(NEWLY_VISITED_URLS_FILE) # Clear the local buffer
+        print("--- Sync complete ---\n")
+    except (exceptions.GoogleAPICallError, OSError) as e:
+        print(f"  [Error] Failed to sync visited URLs to GCS: {e}")
 # --- Main Execution ---
 if __name__ == "__main__":
     if PROJECT_ID == "your-gcp-project-id" or BUCKET_NAME == "your-gcs-bucket-for-pdfs":
@@ -152,12 +183,40 @@ if __name__ == "__main__":
         print("Please create the GCS bucket before running the script.")
         exit()
 
-    while urls_to_visit:
-        # .pop() gets an arbitrary element, which is fine for a set-based queue
-        current_url = urls_to_visit.pop()
-        crawl_page(current_url, bucket)
-        print(f"Queue size: {len(urls_to_visit)} | Visited: {len(visited_urls)}")
-    
-    print("\n--- Crawl Finished ---")
-    print(f"Visited a total of {len(visited_urls)} pages.")
-    print(f"You can now create a Vertex AI Search data store from the GCS bucket 'gs://{BUCKET_NAME}'.")
+    # --- Load State ---
+    print(f"Attempting to load previously visited URLs from 'gs://{BUCKET_NAME}/{VISITED_URLS_BLOB_NAME}'...")
+    visited_urls_blob = bucket.blob(VISITED_URLS_BLOB_NAME)
+    try:
+        if visited_urls_blob.exists():
+            # Download the list of URLs visited in previous runs.
+            previous_urls = visited_urls_blob.download_as_text().splitlines()
+            visited_urls.update(previous_urls)
+            print(f"Loaded {len(previous_urls)} visited URLs from previous session.")
+        else:
+            print("No previous session found. Starting a new crawl.")
+    except exceptions.GoogleAPICallError as e:
+        print(f"Could not load visited URLs from GCS: {e}. Starting fresh.")
+
+    # Remove already visited URLs from the initial queue.
+    urls_to_visit.difference_update(visited_urls)
+
+    # --- Crawl Loop ---
+    pages_since_last_sync = 0
+    try:
+        while urls_to_visit:
+            # .pop() gets an arbitrary element, which is fine for a set-based queue
+            current_url = urls_to_visit.pop()
+            crawl_page(current_url, bucket)
+            pages_since_last_sync += 1
+            print(f"Queue size: {len(urls_to_visit)} | Visited: {len(visited_urls)}")
+
+            # Periodically save progress to GCS
+            if pages_since_last_sync >= 10:
+                upload_visited_urls(bucket)
+                pages_since_last_sync = 0
+    finally:
+        # Ensure final state is saved on exit or interruption (e.g., Ctrl+C)
+        print("\n--- Crawl interrupted or finished. Saving final state... ---")
+        upload_visited_urls(bucket)
+        print(f"Visited a total of {len(visited_urls)} pages.")
+        print(f"You can now create a Vertex AI Search data store from the GCS bucket 'gs://{BUCKET_NAME}'.")
